@@ -301,10 +301,11 @@ async function userHasSufficientCredits(db: Database, userId: string, modelId?: 
   return await db.userHasActiveGrantCapability(userId, 'overspend');
 }
 
-function sendInsufficientCreditsError(ws: AuthenticatedWebSocket): void {
+function sendInsufficientCreditsError(ws: AuthenticatedWebSocket, messageId?: string): void {
   ws.send(JSON.stringify({
     type: 'error',
-    error: 'Insufficient credits. Please add credits before generating more responses.'
+    error: 'Insufficient credits. Please add credits before generating more responses.',
+    messageId
   }));
 }
 
@@ -648,8 +649,15 @@ export function websocketHandler(ws: AuthenticatedWebSocket, req: IncomingMessag
   const inferenceService = new EnhancedInferenceService(baseInferenceService, contextManager);
 
   ws.on('message', async (data) => {
+    const rawData = data.toString();
+    let parsedMessageId: string | undefined;
     try {
-      const message = WsMessageSchema.parse(JSON.parse(data.toString()));
+      const rawMessage = JSON.parse(rawData);
+      parsedMessageId = typeof rawMessage?.messageId === 'string' ? rawMessage.messageId : undefined;
+      const message = WsMessageSchema.parse(rawMessage);
+      if (message.type === 'chat') {
+        console.log(`[WebSocket] Received chat ${message.messageId} for conversation ${message.conversationId} from user ${ws.userId}`);
+      }
       
       if (!ws.userId) {
         ws.send(JSON.stringify({ type: 'error', error: 'Not authenticated' }));
@@ -706,7 +714,8 @@ export function websocketHandler(ws: AuthenticatedWebSocket, req: IncomingMessag
       console.error('WebSocket message error:', error);
       ws.send(JSON.stringify({ 
         type: 'error', 
-        error: error instanceof Error ? error.message : 'Internal server error' 
+        error: error instanceof Error ? error.message : 'Internal server error',
+        messageId: parsedMessageId
       }));
     }
   });
@@ -825,14 +834,14 @@ async function handleChatMessage(
   // Verify conversation access and chat permission
   const conversation = await db.getConversation(message.conversationId, ws.userId);
   if (!conversation) {
-    ws.send(JSON.stringify({ type: 'error', error: 'Conversation not found or access denied' }));
+    ws.send(JSON.stringify({ type: 'error', error: 'Conversation not found or access denied', messageId: message.messageId }));
     return;
   }
   
   // Check if user can chat (owner or collaborator/editor)
   const canChat = await db.canUserChatInConversation(message.conversationId, ws.userId);
   if (!canChat) {
-    ws.send(JSON.stringify({ type: 'error', error: 'You do not have permission to send messages in this conversation' }));
+    ws.send(JSON.stringify({ type: 'error', error: 'You do not have permission to send messages in this conversation', messageId: message.messageId }));
     return;
   }
 
@@ -847,6 +856,7 @@ async function handleChatMessage(
   if (filterResult.blocked) {
     ws.send(JSON.stringify({ 
       type: 'content_blocked',
+      messageId: message.messageId,
       reason: filterResult.reason || 'Message blocked by content filter',
       categories: filterResult.categories
     }));
@@ -936,8 +946,10 @@ async function handleChatMessage(
   Logger.debug('User message has attachments?', userMessage.branches[userMessage.branches.length - 1]?.attachments?.length || 0);
 
   // Send confirmation to sender
+  console.log(`[Chat] Sending user-message ack ${message.messageId} -> stored message ${userMessage.id}`);
   ws.send(JSON.stringify({
     type: 'message_created',
+    messageId: message.messageId,
     message: userMessage
   }));
   
@@ -970,7 +982,7 @@ async function handleChatMessage(
     // For standard format, use the assistant participant (there should only be one)
     responder = participants.find(p => p.type === 'assistant');
     if (!responder) {
-      ws.send(JSON.stringify({ type: 'error', error: 'No assistant participant found' }));
+      ws.send(JSON.stringify({ type: 'error', error: 'No assistant participant found', messageId: message.messageId }));
       return;
     }
   } else {
@@ -982,7 +994,7 @@ async function handleChatMessage(
     
     responder = participants.find(p => p.id === message.responderId);
     if (!responder || responder.type !== 'assistant') {
-      ws.send(JSON.stringify({ type: 'error', error: 'Invalid responder' }));
+      ws.send(JSON.stringify({ type: 'error', error: 'Invalid responder', messageId: message.messageId }));
       return;
     }
   }
@@ -990,7 +1002,7 @@ async function handleChatMessage(
   const inferenceModel = responder.model || conversation.model;
 
   if (!(await userHasSufficientCredits(db, conversation.userId, inferenceModel))) {
-    sendInsufficientCreditsError(ws);
+    sendInsufficientCreditsError(ws, message.messageId);
     return;
   }
   
@@ -1056,7 +1068,8 @@ async function handleChatMessage(
     console.error('Failed to create assistant message');
     ws.send(JSON.stringify({
       type: 'error',
-      error: 'Failed to create assistant message'
+      error: 'Failed to create assistant message',
+      messageId: message.messageId
     }));
     return;
   }
@@ -1097,6 +1110,7 @@ async function handleChatMessage(
   
   // Stream response from appropriate service
   try {
+    console.log(`[Chat] Preparing inference for ${message.messageId} using model ${inferenceModel}`);
     Logger.websocket(`[WebSocket] Responder:`, JSON.stringify(responder, null, 2));
     Logger.websocket(`[WebSocket] Conversation model: "${conversation.model}"`);
     Logger.websocket(`[WebSocket] Determined inferenceModel: "${inferenceModel}"`);
@@ -1171,6 +1185,7 @@ async function handleChatMessage(
 
     // Track AI request in room manager for multi-user sync
     roomManager.startAiRequest(message.conversationId, ws.userId!, assistantMessage.id);
+    console.log(`[Chat] Starting provider stream for ${message.messageId} -> assistant ${assistantMessage.id}`);
 
     // Per-participant context budgeting
     const responderPersonaContext = responder.personaContext;

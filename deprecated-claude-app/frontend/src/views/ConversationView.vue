@@ -793,7 +793,8 @@
               <!-- Send/Stop button -->
               <v-btn
                 v-if="!isStreaming"
-                :disabled="!messageInput || !isWsConnected"
+                :disabled="!messageInput || !isWsConnected || isSendingMessage"
+                :loading="isSendingMessage"
                 :color="isWsConnected ? 'primary' : 'grey'"
                 icon="mdi-send"
                 variant="flat"
@@ -801,6 +802,7 @@
                 style="touch-action: manipulation;"
                 class="ml-1"
                 :title="isWsConnected ? 'Send message' : 'Waiting for connection...'"
+                @pointerup.stop.prevent="sendMessage"
                 @click="sendMessage"
               />
               <v-btn
@@ -1172,6 +1174,17 @@
         <v-btn variant="text" @click="errorSnackbar = false">Close</v-btn>
       </template>
     </v-snackbar>
+
+    <div
+      v-if="wsDebugPanel"
+      class="ws-debug-panel"
+    >
+      <div class="ws-debug-header">
+        <span>WS debug</span>
+        <button type="button" @click="clearWsDebugLog">clear</button>
+      </div>
+      <pre>{{ wsDebugLogText }}</pre>
+    </div>
   </v-layout>
 </template>
 
@@ -1181,6 +1194,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { isEqual } from 'lodash-es';
 import { useStore } from '@/store';
 import { api } from '@/services/api';
+import { createClientUuid } from '@/utils/uuid';
 import type { Conversation, Message, Participant, Model, Bookmark, Persona } from '@deprecated-claude/shared';
 import { UpdateParticipantSchema, getValidatedModelDefaults } from '@deprecated-claude/shared';
 import CompositeMessageGroup from '@/components/CompositeMessageGroup.vue';
@@ -1232,6 +1246,7 @@ const rawImportData = ref('');
 const messageInput = ref('');
 const personas = ref<Persona[]>([]);
 const isStreaming = ref(false);
+const isSendingMessage = ref(false);
 const streamingMessageId = ref<string | null>(null);
 const streamingBranchId = ref<string | null>(null);  // Track which branch is streaming
 const autoScrollEnabled = ref(true);
@@ -1278,6 +1293,51 @@ const MAX_CONSOLE_LOGS = 200;
 const errorSnackbar = ref(false);
 const errorSnackbarMessage = ref('');
 const errorSnackbarDetails = ref('');
+const wsDebugPanel = ref(typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debugWs'));
+const wsDebugEntries = ref<Array<{ t: string; label: string; data?: unknown }>>([]);
+const wsDebugLogText = computed(() => [...wsDebugEntries.value].reverse().map(entry => {
+  const time = entry.t.split('T')[1]?.replace('Z', '') || entry.t;
+  const data = entry.data === undefined ? '' : ` ${JSON.stringify(entry.data)}`;
+  return `${time} ${entry.label}${data}`;
+}).join('\n'));
+
+function loadWsDebugLog() {
+  if (!wsDebugPanel.value) return;
+  try {
+    wsDebugEntries.value = JSON.parse(localStorage.getItem('ws-debug-log') || '[]').slice(-80);
+  } catch {
+    wsDebugEntries.value = [];
+  }
+}
+
+function handleWsDebugEvent(event: Event) {
+  const detail = (event as CustomEvent).detail;
+  wsDebugEntries.value = [...wsDebugEntries.value, detail].slice(-80);
+}
+
+function clearWsDebugLog() {
+  localStorage.removeItem('ws-debug-log');
+  wsDebugEntries.value = [];
+}
+
+function appendWsDebug(label: string, data?: unknown) {
+  if (!wsDebugPanel.value) return;
+
+  const entry = {
+    t: new Date().toISOString(),
+    label,
+    data
+  };
+  wsDebugEntries.value = [...wsDebugEntries.value, entry].slice(-80);
+
+  try {
+    const existing = JSON.parse(localStorage.getItem('ws-debug-log') || '[]');
+    existing.push(entry);
+    localStorage.setItem('ws-debug-log', JSON.stringify(existing.slice(-200)));
+  } catch {
+    // Debug logging must never affect app behavior.
+  }
+}
 
 // Multi-user room state
 const roomUsers = ref<Array<{ userId: string; joinedAt: Date }>>([]);
@@ -2062,6 +2122,11 @@ watch(conversations, (newConversations) => {
 
 // Load initial data
 onMounted(async () => {
+  if (wsDebugPanel.value && typeof window !== 'undefined') {
+    loadWsDebugLog();
+    window.addEventListener('ws-debug', handleWsDebugEvent);
+  }
+
   // Set up console log interceptor for debugging stuck generations
   if (typeof window !== 'undefined') {
     const originalLog = console.log;
@@ -2115,6 +2180,11 @@ onMounted(async () => {
   nextTick(() => {
     if (store.state.wsService) {
       store.state.wsService.on('message_created', (data: any) => {
+        if (data.messageId) {
+          clearPendingChatDraft(data.messageId);
+          isSendingMessage.value = false;
+        }
+
         // A new message was created, start tracking streaming
         if (data.message && data.message.branches?.length > 0) {
           const lastBranch = data.message.branches[data.message.branches.length - 1];
@@ -2318,6 +2388,11 @@ onMounted(async () => {
       store.state.wsService.on('error', (data: any) => {
         // Handle streaming errors
         console.error('WebSocket error:', data);
+
+        if (restorePendingChatDraft(data.messageId)) {
+          isSendingMessage.value = false;
+          isStreaming.value = false;
+        }
         
         // If we're currently streaming, mark it as failed on the message
         if (isStreaming.value && streamingMessageId.value) {
@@ -2339,8 +2414,21 @@ onMounted(async () => {
       store.state.wsService.on('content_blocked', (data: any) => {
         // Content was blocked by moderation - show informative dialog
         console.warn('Content blocked by moderation:', data);
+        restorePendingChatDraft(data.messageId);
+        isSendingMessage.value = false;
         contentBlockedData.value = data;
         contentBlockedDialog.value = true;
+      });
+
+      store.state.wsService.on('send_failed', (data: any) => {
+        const failedMessageId = data?.message?.type === 'chat' ? data.message.messageId : undefined;
+        if (restorePendingChatDraft(failedMessageId)) {
+          isSendingMessage.value = false;
+          isStreaming.value = false;
+          errorSnackbarMessage.value = 'Message was not sent';
+          errorSnackbarDetails.value = typeof data.error === 'string' ? data.error : data.error?.message || '';
+          errorSnackbar.value = true;
+        }
       });
       
       // Multi-user room events
@@ -2502,6 +2590,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (typeof window !== 'undefined') {
     window.removeEventListener('resize', updateMobileState);
+    window.removeEventListener('ws-debug', handleWsDebugEvent);
   }
   
   // Leave room when unmounting
@@ -2512,6 +2601,57 @@ onBeforeUnmount(() => {
 
 // Store drafts per conversation
 const conversationDrafts = ref<Map<string, string>>(new Map());
+const pendingChatDrafts = ref<Map<string, { conversationId: string; content: string; timeoutId?: ReturnType<typeof setTimeout> }>>(new Map());
+
+function clearPendingChatDraft(messageId: string) {
+  const pending = pendingChatDrafts.value.get(messageId);
+  if (!pending) return;
+
+  if (pending.timeoutId) {
+    clearTimeout(pending.timeoutId);
+  }
+  pendingChatDrafts.value.delete(messageId);
+  if (conversationDrafts.value.get(pending.conversationId) === pending.content) {
+    conversationDrafts.value.delete(pending.conversationId);
+  }
+}
+
+function restorePendingChatDraft(messageId: string | undefined) {
+  if (!messageId) return false;
+
+  const pending = pendingChatDrafts.value.get(messageId);
+  if (!pending) return false;
+
+  if (pending.timeoutId) {
+    clearTimeout(pending.timeoutId);
+  }
+  pendingChatDrafts.value.delete(messageId);
+  conversationDrafts.value.set(pending.conversationId, pending.content);
+  if (currentConversation.value?.id === pending.conversationId && !messageInput.value) {
+    messageInput.value = pending.content;
+  }
+
+  return true;
+}
+
+function startPendingChatAckTimeout(messageId: string) {
+  const pending = pendingChatDrafts.value.get(messageId);
+  if (!pending) return;
+
+  pending.timeoutId = setTimeout(() => {
+    if (!restorePendingChatDraft(messageId)) return;
+
+    isSendingMessage.value = false;
+    isStreaming.value = false;
+    streamingMessageId.value = null;
+    streamingBranchId.value = null;
+    clearStuckDetection();
+    errorSnackbarMessage.value = 'Message was not confirmed by the server';
+    errorSnackbarDetails.value = 'The WebSocket accepted the send locally, but no message_created acknowledgment arrived.';
+    errorSnackbar.value = true;
+    console.warn('[Chat] No message_created ack for client message:', messageId);
+  }, 3000);
+}
 
 // Track if initial setup is complete
 const isInitialized = ref(false);
@@ -2839,37 +2979,55 @@ async function createNewConversation() {
 async function sendMessage() {
   // const content = messageInput.value.trim();
   const content = messageInput.value;
-  if (!content || isStreaming.value) return;
-  
-  // Stop typing notification immediately when sending
-  stopTypingNotification();
-  
-  console.log('ConversationView sendMessage:', content);
-  console.log('Current visible messages:', messages.value.length);
-  console.log('Selected parent branch:', selectedBranchForParent.value);
-  
-  // Capture hiddenFromAi and samplingBranches (don't reset sampling - user may want to continue sampling)
-  const messageHiddenFromAi = hiddenFromAi.value;
-  const messageSamplingBranches = samplingBranches.value;
-  hiddenFromAi.value = false; // Reset hiddenFromAi for next message (sampling stays)
-  
-  // Only set streaming state if message will trigger AI generation
-  // Hidden messages, no-response mode, and messages without responder don't trigger AI
-  const willTriggerAi = !messageHiddenFromAi && (
-    (currentConversation.value?.format === 'standard' && !noResponseMode.value) || selectedResponder.value
-  );
-  
-  if (willTriggerAi && !isMultiuserConversation.value) {
-    // Only block UI in single-user mode when expecting AI response
-    isStreaming.value = true;
+  appendWsDebug('ui:sendMessage:entered', {
+    hasContent: !!content,
+    isStreaming: isStreaming.value,
+    isSendingMessage: isSendingMessage.value,
+    isWsConnected: isWsConnected.value,
+    currentConversationId: currentConversation.value?.id
+  });
+
+  if (!content || isStreaming.value || isSendingMessage.value) {
+    appendWsDebug('ui:sendMessage:guard-return', {
+      hasContent: !!content,
+      isStreaming: isStreaming.value,
+      isSendingMessage: isSendingMessage.value
+    });
+    return;
   }
-  streamingError.value = null;
-  
+
+  isSendingMessage.value = true;
+  appendWsDebug('ui:sendMessage:sending-state');
+
   const attachmentsCopy = [...attachments.value];
-  messageInput.value = '';
-  attachments.value = [];
+  const conversationId = currentConversation.value?.id;
+  const clientMessageId = createClientUuid();
+  appendWsDebug('ui:sendMessage:client-id', { clientMessageId, conversationId });
   
   try {
+    // Stop typing notification immediately when sending
+    stopTypingNotification();
+    
+    console.log('ConversationView sendMessage:', content);
+    console.log('Current visible messages:', messages.value.length);
+    console.log('Selected parent branch:', selectedBranchForParent.value);
+    
+    // Capture hiddenFromAi and samplingBranches (don't reset sampling - user may want to continue sampling)
+    const messageHiddenFromAi = hiddenFromAi.value;
+    const messageSamplingBranches = samplingBranches.value;
+    hiddenFromAi.value = false; // Reset hiddenFromAi for next message (sampling stays)
+    
+    streamingError.value = null;
+    
+    if (conversationId) {
+      pendingChatDrafts.value.set(clientMessageId, { conversationId, content });
+      conversationDrafts.value.set(conversationId, content);
+      startPendingChatAckTimeout(clientMessageId);
+    }
+
+    messageInput.value = '';
+    attachments.value = [];
+
     let participantId: string | undefined;
     let responderId: string | undefined;
     
@@ -2889,22 +3047,29 @@ async function sendMessage() {
     
     // Pass the selected parent branch if one is selected
     const parentBranchId = selectedBranchForParent.value?.branchId;
-      
-    await store.sendMessage(content, participantId, responderId, attachmentsCopy, parentBranchId, messageHiddenFromAi, messageSamplingBranches);
+    appendWsDebug('ui:sendMessage:before-store', { clientMessageId, participantId, responderId, parentBranchId });
+
+    const sentMessageId = await store.sendMessage(content, participantId, responderId, attachmentsCopy, parentBranchId, messageHiddenFromAi, messageSamplingBranches, clientMessageId);
+    appendWsDebug('ui:sendMessage:after-store', { sentMessageId });
+    if (!sentMessageId) {
+      throw new Error('Message send did not return a client message id');
+    }
     
     // Clear selection after successful send
     if (selectedBranchForParent.value) {
       selectedBranchForParent.value = null;
     }
-    
-    // Clear draft for this conversation since message was sent successfully
-    if (currentConversation.value) {
-      conversationDrafts.value.delete(currentConversation.value.id);
-    }
   } catch (error) {
     console.error('Failed to send message:', error);
+    appendWsDebug('ui:sendMessage:catch', { error: error instanceof Error ? error.message : String(error) });
+    pendingChatDrafts.value.delete(clientMessageId);
     messageInput.value = content; // Restore input on error
+    attachments.value = attachmentsCopy;
+    isSendingMessage.value = false;
     isStreaming.value = false; // Reset streaming state on error
+    errorSnackbarMessage.value = 'Message was not sent';
+    errorSnackbarDetails.value = error instanceof Error ? error.message : String(error);
+    errorSnackbar.value = true;
   }
 }
 
@@ -5261,6 +5426,43 @@ function formatDate(date: Date | string): string {
 }
 
 /* Stuck button animation is now inline in MessageComponent */
+
+.ws-debug-panel {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  z-index: 10000;
+  max-height: 30vh;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(16, 16, 16, 0.94);
+  color: #f1f1f1;
+  font-size: 11px;
+}
+
+.ws-debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-weight: 700;
+}
+
+.ws-debug-header button {
+  color: #f1f1f1;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.ws-debug-panel pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .fade-enter-active,
 .fade-leave-active {

@@ -2,6 +2,36 @@ import type { WsMessage } from '@deprecated-claude/shared';
 
 type EventHandler = (data: any) => void;
 
+type WsDebugEntry = {
+  t: string;
+  label: string;
+  data?: unknown;
+};
+
+const wsDebugEnabled = () =>
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debugWs');
+
+function wsDebug(label: string, data?: unknown): void {
+  if (!wsDebugEnabled()) return;
+
+  const entry: WsDebugEntry = {
+    t: new Date().toISOString(),
+    label,
+    data
+  };
+
+  console.log(`[WSDBG] ${label}`, data ?? '');
+  window.dispatchEvent(new CustomEvent('ws-debug', { detail: entry }));
+
+  try {
+    const existing = JSON.parse(localStorage.getItem('ws-debug-log') || '[]') as WsDebugEntry[];
+    existing.push(entry);
+    localStorage.setItem('ws-debug-log', JSON.stringify(existing.slice(-200)));
+  } catch {
+    // Debug logging must never affect app behavior.
+  }
+}
+
 export interface RoomUser {
   userId: string;
   joinedAt: Date;
@@ -22,7 +52,6 @@ export class WebSocketService {
   private connectionTimeout: number | null = null; // Timeout for connection attempts
   private keepAliveInterval: number | null = null; // Client-side keep-alive for Safari
   private eventHandlers: Map<string, Set<EventHandler>> = new Map();
-  private messageQueue: WsMessage[] = [];
   private currentRoomId: string | null = null;
   private visibilityHandler: (() => void) | null = null;
   private intentionalDisconnect = false; // Track if disconnect was intentional
@@ -134,6 +163,7 @@ export class WebSocketService {
     }
     
     console.log('[WS] Connecting to:', wsUrl.toString(), '(tabId:', tabId, ')');
+    wsDebug('connect:start', { url: wsUrl.toString(), tabId });
     this.emit('connection_state', { state: 'connecting' });
     
     // Close any existing WebSocket before creating new one
@@ -175,6 +205,7 @@ export class WebSocketService {
     
     this.ws.onopen = () => {
       console.log('[WS] Connected successfully');
+      wsDebug('connect:open');
       // Clear connection timeout
       if (this.connectionTimeout) {
         clearTimeout(this.connectionTimeout);
@@ -187,14 +218,9 @@ export class WebSocketService {
       // Start client-side keep-alive (Safari needs this more frequently)
       // Send a ping every 15 seconds to keep the connection alive
       this.startKeepAlive();
+
+      this.rejoinCurrentRoom();
       
-      // Send queued messages
-      while (this.messageQueue.length > 0) {
-        const message = this.messageQueue.shift();
-        if (message) {
-          this.sendMessage(message);
-        }
-      }
     };
     
     this.ws.onmessage = (event) => {
@@ -204,6 +230,7 @@ export class WebSocketService {
       try {
         const data = JSON.parse(event.data);
         // console.log('WebSocket received:', data.type, data);
+        wsDebug('receive', { type: data.type, messageId: data.messageId, readyState: this.ws?.readyState });
         this.emit(data.type, data);
       } catch (error) {
         console.error('[WS] Failed to parse message:', error);
@@ -212,6 +239,7 @@ export class WebSocketService {
     
     this.ws.onclose = (event) => {
       console.log('[WS] Disconnected', event.code, event.reason, `(was connected for ${Math.round((Date.now() - this.lastPongTime) / 1000)}s since last activity)`);
+      wsDebug('connect:close', { code: event.code, reason: event.reason, readyState: this.ws?.readyState });
       // Clear connection timeout
       if (this.connectionTimeout) {
         clearTimeout(this.connectionTimeout);
@@ -231,6 +259,7 @@ export class WebSocketService {
     
     this.ws.onerror = (error) => {
       console.error('[WS] Error:', error);
+      wsDebug('connect:error', { readyState: this.ws?.readyState });
     };
   }
   
@@ -296,22 +325,104 @@ export class WebSocketService {
     }
     
     this.eventHandlers.clear();
-    this.messageQueue = [];
   }
   
-  sendMessage(message: WsMessage): void {
+  sendMessage(message: WsMessage): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       console.log('WebSocket sending message:', message);
-      this.ws.send(JSON.stringify(message));
-    } else {
-      // Queue message if not connected
-      this.messageQueue.push(message);
-      
-      // Try to connect if not already attempting
-      if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
-        this.connect();
+      wsDebug('send:attempt', { type: message.type, messageId: 'messageId' in message ? message.messageId : undefined });
+      try {
+        this.ws.send(JSON.stringify(message));
+        wsDebug('send:accepted', { type: message.type, messageId: 'messageId' in message ? message.messageId : undefined });
+        return true;
+      } catch (error) {
+        console.error('[WS] Failed to send message:', error);
+        wsDebug('send:throw', { type: message.type, error: error instanceof Error ? error.message : String(error) });
+        this.emit('send_failed', { message, error });
+        return false;
       }
     }
+
+    wsDebug('send:not-open', { type: message.type, readyState: this.ws?.readyState ?? WebSocket.CLOSED });
+    this.emit('send_failed', {
+      message,
+      error: 'WebSocket is not open',
+      readyState: this.ws?.readyState ?? WebSocket.CLOSED
+    });
+    
+    // Try to connect if not already attempting
+    if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+      this.connect();
+    }
+
+    return false;
+  }
+
+  async sendReliableMessage(message: WsMessage, pongTimeoutMs: number = 1500): Promise<boolean> {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      wsDebug('reliable:not-open', { type: message.type, readyState: this.ws?.readyState ?? WebSocket.CLOSED });
+      return this.sendMessage(message);
+    }
+
+    wsDebug('reliable:preflight', { type: message.type, timeoutMs: pongTimeoutMs });
+    const alive = await this.confirmApplicationLiveness(pongTimeoutMs);
+    if (!alive) {
+      const error = `No pong received within ${pongTimeoutMs}ms`;
+      console.warn('[WS] Refusing to send on unresponsive WebSocket:', error);
+      wsDebug('reliable:preflight-failed', { type: message.type, error });
+      this.emit('send_failed', { message, error });
+      try {
+        this.ws?.close(4001, 'Application-level ping timed out before send');
+      } catch {
+        // Ignore close failures; reconnect handling will run from onclose when available.
+      }
+      return false;
+    }
+
+    wsDebug('reliable:preflight-ok', { type: message.type });
+    return this.sendMessage(message);
+  }
+
+  private confirmApplicationLiveness(timeoutMs: number): Promise<boolean> {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return Promise.resolve(false);
+    }
+
+    return new Promise(resolve => {
+      let timeoutId: number | null = null;
+      let settled = false;
+
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
+        this.off('pong', handlePong);
+      };
+
+      const handlePong = () => {
+        wsDebug('preflight:pong');
+        cleanup();
+        resolve(true);
+      };
+
+      this.on('pong', handlePong);
+      timeoutId = window.setTimeout(() => {
+        wsDebug('preflight:timeout', { timeoutMs });
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+
+      try {
+        wsDebug('preflight:ping');
+        this.ws!.send(JSON.stringify({ type: 'ping' }));
+      } catch (error) {
+        cleanup();
+        console.warn('[WS] Failed application-level ping before send:', error);
+        resolve(false);
+      }
+    });
   }
   
   on(event: string, handler: EventHandler): void {
@@ -349,6 +460,17 @@ export class WebSocketService {
     this.reconnectTimeout = window.setTimeout(() => {
       this.connect();
     }, delay);
+  }
+
+  private rejoinCurrentRoom(): void {
+    if (!this.currentRoomId) return;
+
+    const conversationId = this.currentRoomId;
+    this.sendMessage({
+      type: 'join_room',
+      conversationId
+    } as WsMessage);
+    console.log('[WS] Rejoined room after connect:', conversationId);
   }
   
   // Room management for multi-user conversations
@@ -413,6 +535,6 @@ export class WebSocketService {
   }
   
   get queuedMessageCount(): number {
-    return this.messageQueue.length;
+    return 0;
   }
 }

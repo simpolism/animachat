@@ -3,6 +3,7 @@ import type { User, Conversation, Message, Model, OpenRouterModel, UserDefinedMo
 import { getValidatedModelDefaults } from '@deprecated-claude/shared';
 import { api } from '../services/api';
 import { WebSocketService } from '../services/websocket';
+import { createClientUuid } from '../utils/uuid';
 
 // Model availability info - which providers user can use
 interface ModelAvailability {
@@ -80,7 +81,7 @@ export interface Store {
   compactConversation(id: string): Promise<{ success: boolean; result: any; message: string }>;
   
   loadMessages(conversationId: string): Promise<void>;
-  sendMessage(content: string, participantId?: string, responderId?: string, attachments?: Array<{ fileName: string; fileType: string; content: string; isImage?: boolean }>, explicitParentBranchId?: string, hiddenFromAi?: boolean, samplingBranches?: number): Promise<void>;
+  sendMessage(content: string, participantId?: string, responderId?: string, attachments?: Array<{ fileName: string; fileType: string; content: string; isImage?: boolean }>, explicitParentBranchId?: string, hiddenFromAi?: boolean, samplingBranches?: number, clientMessageId?: string): Promise<string | null>;
   continueGeneration(responderId?: string, explicitParentBranchId?: string, samplingBranches?: number): Promise<void>;
   regenerateMessage(messageId: string, branchId: string, parentBranchId?: string, samplingBranches?: number): Promise<void>;
   abortGeneration(): void;
@@ -652,8 +653,13 @@ export function createStore(): {
       }
     },
     
-    async sendMessage(content: string, participantId?: string, responderId?: string, attachments?: Array<{ fileName: string; fileType: string; content: string; isImage?: boolean }>, explicitParentBranchId?: string, hiddenFromAi?: boolean, samplingBranches?: number) {
-      if (!state.currentConversation || !state.wsService) return;
+    async sendMessage(content: string, participantId?: string, responderId?: string, attachments?: Array<{ fileName: string; fileType: string; content: string; isImage?: boolean }>, explicitParentBranchId?: string, hiddenFromAi?: boolean, samplingBranches?: number, clientMessageId?: string) {
+      if (!state.currentConversation) {
+        throw new Error('Cannot send message before the conversation has loaded');
+      }
+      if (!state.wsService) {
+        throw new Error('Cannot send message before the WebSocket service is initialized');
+      }
       
       let parentBranchId: string | undefined;
       
@@ -675,7 +681,7 @@ export function createStore(): {
       const messageData = {
         type: 'chat' as const,
         conversationId: state.currentConversation.id,
-        messageId: crypto.randomUUID(),
+        messageId: clientMessageId ?? createClientUuid(),
         content,
         parentBranchId,
         participantId,
@@ -690,7 +696,10 @@ export function createStore(): {
       //   console.log('Attachment details:', attachments.map(a => ({ fileName: a.fileName, size: a.content?.length })));
       // }
       
-      state.wsService.sendMessage(messageData);
+      const sent = await state.wsService.sendReliableMessage(messageData);
+      if (!sent) {
+        throw new Error('Message was not sent because the WebSocket is not open');
+      }
       
       // Update the conversation's updatedAt timestamp locally for immediate sorting
       const conv = state.conversations.find(c => c.id === state.currentConversation!.id);
@@ -698,6 +707,8 @@ export function createStore(): {
         conv.updatedAt = new Date();
         console.log(`[Store] Updated conversation ${conv.id} timestamp for sorting`);
       }
+
+      return messageData.messageId;
     },
     
     async continueGeneration(responderId?: string, explicitParentBranchId?: string, samplingBranches?: number) {
@@ -723,7 +734,7 @@ export function createStore(): {
       state.wsService.sendMessage({
         type: 'continue',
         conversationId: state.currentConversation.id,
-        messageId: crypto.randomUUID(),
+        messageId: createClientUuid(),
         parentBranchId,
         responderId,
         samplingBranches: samplingBranches && samplingBranches > 1 ? samplingBranches : undefined

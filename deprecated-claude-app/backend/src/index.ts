@@ -131,7 +131,7 @@ app.use(compression({
 console.log('[HTTP] Gzip compression enabled (threshold: 1KB)');
 
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => callback(null, true),
   credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));

@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: HOST,
       port: PORT,
-      allowedHosts: allowedHosts.length > 0 ? allowedHosts : 'all',
+      allowedHosts: allowedHosts.length > 0 ? allowedHosts : (true as const),
       proxy: {
         '/api': {
           target: 'http://localhost:3010',
