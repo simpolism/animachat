@@ -3290,7 +3290,16 @@ function dismissStuckDialog() {
   showStuckButton.value = false;
 }
 
-async function editMessage(messageId: string, branchId: string, content: string) {
+type EditedAttachment = {
+  fileName: string;
+  fileType: string;
+  content: string;
+  fileSize?: number;
+  mimeType?: string;
+  encoding?: 'base64' | 'text' | 'url';
+};
+
+async function editMessage(messageId: string, branchId: string, content: string, attachments?: EditedAttachment[]) {
   // Pass the currently selected responder for multi-participant mode
   let responderId: string | undefined;
   
@@ -3305,12 +3314,12 @@ async function editMessage(messageId: string, branchId: string, content: string)
     responderId = selectedResponder.value || undefined;
   }
   
-  await store.editMessage(messageId, branchId, content, responderId, false, samplingBranches.value);
+  await store.editMessage(messageId, branchId, content, responderId, false, samplingBranches.value, attachments);
 }
 
-async function editMessageOnly(messageId: string, branchId: string, content: string) {
+async function editMessageOnly(messageId: string, branchId: string, content: string, attachments?: EditedAttachment[]) {
   // Edit and branch without triggering AI regeneration
-  await store.editMessage(messageId, branchId, content, undefined, true);
+  await store.editMessage(messageId, branchId, content, undefined, true, undefined, attachments);
 }
 
 function switchBranch(messageId: string, branchId: string) {

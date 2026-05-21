@@ -85,7 +85,7 @@ export interface Store {
   continueGeneration(responderId?: string, explicitParentBranchId?: string, samplingBranches?: number): Promise<void>;
   regenerateMessage(messageId: string, branchId: string, parentBranchId?: string, samplingBranches?: number): Promise<void>;
   abortGeneration(): void;
-  editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number): Promise<void>;
+  editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number, attachments?: Array<{ fileName: string; fileType: string; content: string; fileSize?: number; mimeType?: string; encoding?: 'base64' | 'text' | 'url' }>): Promise<void>;
   switchBranch(messageId: string, branchId: string): void;
   switchBranchesBatch(switches: Array<{ messageId: string; branchId: string }>): void;
   deleteMessage(messageId: string, branchId: string): Promise<void>;
@@ -766,7 +766,7 @@ export function createStore(): {
       });
     },
     
-    async editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number) {
+    async editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number, attachments?: Array<{ fileName: string; fileType: string; content: string; fileSize?: number; mimeType?: string; encoding?: 'base64' | 'text' | 'url' }>) {
       if (!state.currentConversation || !state.wsService) return;
       
       state.wsService.sendMessage({
@@ -777,7 +777,8 @@ export function createStore(): {
         content,
         responderId, // Pass the currently selected responder
         skipRegeneration, // If true, don't generate AI response after edit
-        samplingBranches // Number of parallel response branches to generate
+        samplingBranches, // Number of parallel response branches to generate
+        ...(attachments !== undefined ? { attachments } : {})
       } as any);
       
       // Update the conversation's updatedAt timestamp locally for immediate sorting
