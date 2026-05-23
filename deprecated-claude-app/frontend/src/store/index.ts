@@ -1,5 +1,5 @@
 import { reactive, inject, InjectionKey, App } from 'vue';
-import type { User, Conversation, Message, Model, OpenRouterModel, UserDefinedModel, CreateUserModel, UpdateUserModel, UserGrantSummary } from '@deprecated-claude/shared';
+import type { User, Conversation, Message, Model, OpenRouterModel, UserDefinedModel, CreateUserModel, UpdateUserModel, UserGrantSummary, WsAttachment } from '@deprecated-claude/shared';
 import { getValidatedModelDefaults } from '@deprecated-claude/shared';
 import { api } from '../services/api';
 import { WebSocketService } from '../services/websocket';
@@ -85,7 +85,7 @@ export interface Store {
   continueGeneration(responderId?: string, explicitParentBranchId?: string, samplingBranches?: number): Promise<void>;
   regenerateMessage(messageId: string, branchId: string, parentBranchId?: string, samplingBranches?: number): Promise<void>;
   abortGeneration(): void;
-  editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number, attachments?: Array<{ fileName: string; fileType: string; content: string; fileSize?: number; mimeType?: string; encoding?: 'base64' | 'text' | 'url' }>): Promise<void>;
+  editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number, attachments?: WsAttachment[]): Promise<void>;
   switchBranch(messageId: string, branchId: string): void;
   switchBranchesBatch(switches: Array<{ messageId: string; branchId: string }>): void;
   deleteMessage(messageId: string, branchId: string): Promise<void>;
@@ -766,7 +766,7 @@ export function createStore(): {
       });
     },
     
-    async editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number, attachments?: Array<{ fileName: string; fileType: string; content: string; fileSize?: number; mimeType?: string; encoding?: 'base64' | 'text' | 'url' }>) {
+    async editMessage(messageId: string, branchId: string, content: string, responderId?: string, skipRegeneration?: boolean, samplingBranches?: number, attachments?: WsAttachment[]) {
       if (!state.currentConversation || !state.wsService) return;
       
       state.wsService.sendMessage({

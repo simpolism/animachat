@@ -1851,7 +1851,7 @@ async function handleEdit(
         fileName: att.fileName,
         fileType: att.fileType,
         content: att.content,
-        fileSize: att.fileSize || att.content.length,
+        fileSize: att.fileSize ?? Math.round(att.content.replace(/=+$/, '').length * 3 / 4),
         mimeType: att.mimeType,
         encoding: att.encoding
       }))

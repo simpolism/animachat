@@ -1256,7 +1256,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { isEqual } from 'lodash-es';
 import { useStore } from '@/store';
 import { api } from '@/services/api';
-import type { Conversation, Message, Participant, Model, Bookmark, Persona } from '@deprecated-claude/shared';
+import type { Conversation, Message, Participant, Model, Bookmark, Persona, WsAttachment } from '@deprecated-claude/shared';
 import { UpdateParticipantSchema, getValidatedModelDefaults } from '@deprecated-claude/shared';
 import CompositeMessageGroup from '@/components/CompositeMessageGroup.vue';
 import ImportDialogV2 from '@/components/ImportDialogV2.vue';
@@ -3290,16 +3290,7 @@ function dismissStuckDialog() {
   showStuckButton.value = false;
 }
 
-type EditedAttachment = {
-  fileName: string;
-  fileType: string;
-  content: string;
-  fileSize?: number;
-  mimeType?: string;
-  encoding?: 'base64' | 'text' | 'url';
-};
-
-async function editMessage(messageId: string, branchId: string, content: string, attachments?: EditedAttachment[]) {
+async function editMessage(messageId: string, branchId: string, content: string, attachments?: WsAttachment[]) {
   // Pass the currently selected responder for multi-participant mode
   let responderId: string | undefined;
   
@@ -3317,7 +3308,7 @@ async function editMessage(messageId: string, branchId: string, content: string,
   await store.editMessage(messageId, branchId, content, responderId, false, samplingBranches.value, attachments);
 }
 
-async function editMessageOnly(messageId: string, branchId: string, content: string, attachments?: EditedAttachment[]) {
+async function editMessageOnly(messageId: string, branchId: string, content: string, attachments?: WsAttachment[]) {
   // Edit and branch without triggering AI regeneration
   await store.editMessage(messageId, branchId, content, undefined, true, undefined, attachments);
 }

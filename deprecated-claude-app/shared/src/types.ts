@@ -435,9 +435,9 @@ const WsAttachmentSchema = z.object({
   content: z.string(),
   fileSize: z.number().optional(),
   mimeType: z.string().optional(),
-  encoding: z.enum(['base64', 'text', 'url']).optional(),
-  isImage: z.boolean().optional()
+  encoding: z.enum(['base64', 'text', 'url']).optional()
 });
+export type WsAttachment = z.infer<typeof WsAttachmentSchema>;
 
 // Bookmark types
 export const BookmarkSchema = z.object({

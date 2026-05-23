@@ -1627,16 +1627,18 @@ function saveEdit() {
       emit('post-hoc-edit-content', props.message.id, currentBranch.value.id, editContent.value);
     } else {
       // Regular edit that triggers regeneration
-      emit('edit', props.message.id, currentBranch.value.id, editContent.value, editAttachments.value);
+      emit('edit', props.message.id, currentBranch.value.id, editContent.value, attachmentListChanged ? editAttachments.value : undefined);
     }
   }
   cancelEdit();
 }
 
 function saveEditOnly() {
-  if (editContent.value !== currentBranch.value.content || attachmentsChanged()) {
+  const contentChanged = editContent.value !== currentBranch.value.content;
+  const attachmentListChanged = !isPostHocEditing.value && attachmentsChanged();
+  if (contentChanged || attachmentListChanged) {
     // Edit and branch without triggering regeneration
-    emit('edit-only', props.message.id, currentBranch.value.id, editContent.value, editAttachments.value);
+    emit('edit-only', props.message.id, currentBranch.value.id, editContent.value, attachmentListChanged ? editAttachments.value : undefined);
   }
   cancelEdit();
 }
