@@ -5,6 +5,7 @@ import { llmLogger } from '../utils/llmLogger.js';
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  reasoning_content?: string;
 }
 
 export class OpenAICompatibleService {
@@ -12,12 +13,14 @@ export class OpenAICompatibleService {
   private apiKey: string;
   private baseUrl: string;
   private modelPrefix?: string;
+  private preserveReasoning: boolean;
 
-  constructor(db: Database, apiKey: string, baseUrl: string, modelPrefix?: string) {
+  constructor(db: Database, apiKey: string, baseUrl: string, modelPrefix?: string, preserveReasoning = false) {
     this.db = db;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
     this.modelPrefix = modelPrefix;
+    this.preserveReasoning = preserveReasoning;
   }
 
   async streamCompletion(
@@ -276,24 +279,24 @@ export class OpenAICompatibleService {
       const activeBranch = getActiveBranch(message);
       if (activeBranch && activeBranch.role !== 'system') {
         let content = activeBranch.content;
+        let reasoningContent = '';
+        let taggedThinkingContent = '';
         
-        // For assistant messages with thinking blocks, prepend thinking wrapped in <think> tags
-        // This format is commonly used by open source models (DeepSeek, Qwen, etc.)
+        // Providers with preserved reasoning require historical reasoning in a
+        // dedicated field. Other endpoints retain the legacy <think> format.
         if (activeBranch.role === 'assistant' && activeBranch.contentBlocks && activeBranch.contentBlocks.length > 0) {
-          let thinkingContent = '';
-          
           for (const block of activeBranch.contentBlocks) {
             if (block.type === 'thinking') {
-              thinkingContent += `<think>\n${block.thinking}\n</think>\n\n`;
-            } else if (block.type === 'redacted_thinking') {
-              thinkingContent += `<think>[Redacted for safety]</think>\n\n`;
+              if (this.preserveReasoning) {
+                reasoningContent += `${reasoningContent ? '\n\n' : ''}${block.thinking}`;
+              } else {
+                taggedThinkingContent += `<think>\n${block.thinking}\n</think>\n\n`;
+              }
+            } else if (block.type === 'redacted_thinking' && !this.preserveReasoning) {
+              taggedThinkingContent += `<think>[Redacted for safety]</think>\n\n`;
             }
           }
-          
-          // Prepend thinking to content
-          if (thinkingContent) {
-            content = thinkingContent + content;
-          }
+          content = taggedThinkingContent + content;
         }
         
         // Append attachments to user messages
@@ -305,7 +308,8 @@ export class OpenAICompatibleService {
         
         formatted.push({
           role: activeBranch.role as 'user' | 'assistant',
-          content
+          content,
+          ...(reasoningContent ? { reasoning_content: reasoningContent } : {})
         });
       }
     }

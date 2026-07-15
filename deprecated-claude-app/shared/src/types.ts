@@ -174,6 +174,7 @@ export const ModelSchema = z.object({
   outputTokenLimit: z.number(),
   supportsThinking: z.boolean().optional(), // Whether the model supports extended thinking
   thinkingDefaultEnabled: z.boolean().optional(), // Whether thinking should be enabled by default for this model
+  preserveReasoning: z.boolean().optional(), // Replay stored assistant reasoning via reasoning_content
   supportsPrefill: z.boolean().optional(), // Whether model supports prefill/completion mode (defaults based on provider)
   capabilities: ModelCapabilitiesSchema.optional(), // Multimodal capabilities
   currencies: z.record(z.boolean()).optional(),
@@ -298,6 +299,7 @@ export const UserDefinedModelSchema = z.object({
   contextWindow: z.number().min(1000).max(10000000),
   outputTokenLimit: z.number().min(100).max(1000000),
   supportsThinking: z.boolean().default(false),
+  preserveReasoning: z.boolean().default(false), // Replay stored assistant reasoning via reasoning_content
   supportsPrefill: z.boolean().default(false), // Whether model supports prefill/completion mode
   capabilities: ModelCapabilitiesSchema.optional(), // Multimodal capabilities (auto-detected from OpenRouter)
   hidden: z.boolean().default(false),
@@ -322,6 +324,7 @@ export const CreateUserModelSchema = z.object({
   contextWindow: z.number().min(1000).max(10000000),
   outputTokenLimit: z.number().min(100).max(1000000),
   supportsThinking: z.boolean().optional(),
+  preserveReasoning: z.boolean().optional(), // Replay stored assistant reasoning via reasoning_content
   supportsPrefill: z.boolean().optional(), // Whether model supports prefill/completion mode
   capabilities: ModelCapabilitiesSchema.optional(), // Multimodal capabilities (auto-detected from OpenRouter)
   settings: ModelSettingsSchema.optional(),

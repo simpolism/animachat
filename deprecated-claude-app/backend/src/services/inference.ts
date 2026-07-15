@@ -108,7 +108,8 @@ export class InferenceService {
           this.db,
           'dummy-key',
           'http://localhost:11434',
-          undefined
+          undefined,
+          model.preserveReasoning ?? false
         );
         apiMessages = openAIService.formatMessagesForOpenAI(formattedMessages, systemPrompt);
         apiSystemPrompt = undefined; // System prompt is included in messages for OpenAI
@@ -668,7 +669,8 @@ export class InferenceService {
         this.db,
         apiKey,
         baseUrl,
-        modelPrefix
+        modelPrefix,
+        model.preserveReasoning ?? false
       );
       
       usageResult = await openAIService.streamCompletion(
