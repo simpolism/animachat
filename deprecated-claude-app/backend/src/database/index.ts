@@ -5069,6 +5069,7 @@ export class Database {
       userId,
       ...modelData,
       supportsThinking: modelData.supportsThinking || false,
+      preserveReasoning: modelData.preserveReasoning ?? false,
       supportsPrefill: modelData.supportsPrefill ?? false,
       capabilities: modelData.capabilities, // Include auto-detected capabilities
       hidden: false,

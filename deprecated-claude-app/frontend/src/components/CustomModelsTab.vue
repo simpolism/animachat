@@ -176,6 +176,26 @@
       hide-details
       class="mb-3"
     />
+
+    <v-checkbox
+      v-if="selectedProvider === 'openai-compatible'"
+      v-model="formData.preserveReasoning"
+      density="compact"
+      hide-details
+      class="mb-3"
+    >
+      <template v-slot:label>
+        <div class="d-flex align-center">
+          <span>Preserve reasoning across turns</span>
+          <v-tooltip location="top" max-width="320">
+            <template v-slot:activator="{ props }">
+              <v-icon v-bind="props" size="small" class="ml-1" style="opacity: 0.6">mdi-help-circle-outline</v-icon>
+            </template>
+            Replay stored assistant thinking as reasoning_content. Enable only for endpoints that require native reasoning history, such as Kimi models with preserved thinking.
+          </v-tooltip>
+        </div>
+      </template>
+    </v-checkbox>
     
     <v-checkbox
       v-model="formData.supportsPrefill"
@@ -302,6 +322,7 @@ const formData = ref({
   contextWindow: 100000,
   outputTokenLimit: 4096,
   supportsThinking: false,
+  preserveReasoning: false,
   supportsPrefill: false,
   canonicalId: '' as string | undefined,
   capabilities: {
@@ -361,6 +382,7 @@ function openEditDialog(model: UserDefinedModel) {
     contextWindow: model.contextWindow,
     outputTokenLimit: model.outputTokenLimit,
     supportsThinking: model.supportsThinking || false,
+    preserveReasoning: model.preserveReasoning || false,
     supportsPrefill: model.supportsPrefill || false,
     canonicalId: model.canonicalId,
     // Restore capabilities from existing model (preserves auto-detected values)
@@ -399,6 +421,7 @@ function resetForm() {
     contextWindow: 100000,
     outputTokenLimit: 4096,
     supportsThinking: false,
+    preserveReasoning: false,
     supportsPrefill: false,
     canonicalId: undefined,
     capabilities: {

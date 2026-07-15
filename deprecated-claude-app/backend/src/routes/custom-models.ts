@@ -283,7 +283,8 @@ export function customModelsRouter(db: Database): Router {
           db,
           model.customEndpoint.apiKey || '',
           model.customEndpoint.baseUrl,
-          undefined
+          undefined,
+          model.preserveReasoning ?? false
         );
         
         try {
